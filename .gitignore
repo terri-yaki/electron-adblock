@@ -6,3 +6,5 @@ _team/
 _recon/
 *.log
 fixture/node_modules/
+
+release-assets/

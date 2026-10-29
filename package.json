@@ -2,10 +2,10 @@
   "name": "electron-adblock",
   "productName": "Electron Adblock",
   "version": "0.1.0",
-  "description": "Network and cosmetic ad blocking for any Electron application, with a visual element picker.",
-  "author": "Terabase",
+  "description": "Network and cosmetic ad blocker for any Electron application on Windows, with a visual element picker, layout/layer adjustment, reset and hidden-window support.",
+  "author": "Terabase (https://github.com/terri-yaki)",
   "license": "MIT",
-  "private": true,
+  "private": false,
   "main": "build/main.cjs",
   "engines": {
     "node": ">=20"
@@ -21,7 +21,8 @@
     "assets": "node scripts/gen-assets.mjs",
     "shot": "node scripts/screenshot.mjs",
     "package": "npm run build && electron-builder --win portable",
-    "live": "node scripts/live-verify.mjs"
+    "live": "node scripts/live-verify.mjs",
+    "test:integration": "node --import tsx --test \"tests/integration/**/*.test.ts\""
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -61,5 +62,24 @@
     "portable": {
       "artifactName": "Electron-Adblock-portable.exe"
     }
-  }
+  },
+  "homepage": "https://github.com/terri-yaki/electron-adblock#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/terri-yaki/electron-adblock.git"
+  },
+  "bugs": {
+    "url": "https://github.com/terri-yaki/electron-adblock/issues"
+  },
+  "keywords": [
+    "electron",
+    "adblock",
+    "adblocker",
+    "windows",
+    "devtools",
+    "cdp",
+    "chrome-devtools-protocol",
+    "privacy",
+    "overwolf"
+  ]
 }
