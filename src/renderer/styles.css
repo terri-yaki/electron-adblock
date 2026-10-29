@@ -1,0 +1,27 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d10;
+  --panel: #14181d;
+  --line: #242b33;
+  --text: #e8ebee;
+  --muted: #8d97a3;
+  --accent: #ff6b3d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+}
+
+.boot {
+  padding: 48px;
+  color: var(--muted);
+}

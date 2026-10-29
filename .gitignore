@@ -1,0 +1,8 @@
+node_modules/
+build/
+release/
+_shots/
+_team/
+_recon/
+*.log
+fixture/node_modules/

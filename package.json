@@ -1,0 +1,63 @@
+{
+  "name": "electron-adblock",
+  "productName": "Electron Adblock",
+  "version": "0.1.0",
+  "description": "Network and cosmetic ad blocking for any Electron application, with a visual element picker.",
+  "author": "Terabase",
+  "license": "MIT",
+  "private": true,
+  "main": "build/main.cjs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests",
+    "test:unit": "node --import tsx --test tests/unit",
+    "assets": "node scripts/gen-assets.mjs",
+    "shot": "node scripts/screenshot.mjs",
+    "package": "npm run build && electron-builder --win portable"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.12",
+    "electron": "44.1.1",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "build": {
+    "appId": "com.terriyaki.electronadblock",
+    "productName": "Electron Adblock",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "build/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "portable": {
+      "artifactName": "Electron-Adblock-portable.exe"
+    }
+  }
+}
