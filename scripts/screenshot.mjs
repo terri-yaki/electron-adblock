@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync as fsExists } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +47,12 @@ const child = spawn(electronPath, ['.'], {
 const code = await new Promise((resolve) => child.on('exit', resolve));
 if (code !== 0) {
   console.error('screenshot run failed with exit code ' + code);
+  process.exit(1);
+}
+if (!fsExists(out)) {
+  console.error(
+    'screenshot was not written (another Electron Adblock instance may hold the profile lock; set EAB_PROFILE_DIR to isolate)',
+  );
   process.exit(1);
 }
 console.log(out);

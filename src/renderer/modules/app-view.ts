@@ -237,11 +237,15 @@ export function createAppView(ctx: Controller): AppViewComponent {
       closeMenu();
       void ctx.copyText(app.exePath);
     });
+    const resetItem = menuItem('Reset appearance', 'reset', () => {
+      closeMenu();
+      ctx.requestResetAppearance(app.id);
+    });
     const removeItem = menuItem('Remove application', 'trash', () => {
       closeMenu();
       ctx.removeApplication(app);
     }, true);
-    menu.append(copyItem, h('div', { class: 'menu-sep' }), removeItem);
+    menu.append(copyItem, h('div', { class: 'menu-sep' }), resetItem, h('div', { class: 'menu-sep' }), removeItem);
 
     function closeMenu(): void {
       menuOpen = false;
@@ -384,7 +388,9 @@ export function createAppView(ctx: Controller): AppViewComponent {
         'div',
         { class: 'picker-banner-copy' },
         h('strong', { text: 'Layout mode active' }),
-        h('span', { text: 'Click a panel in ' + app.name + ', drag its handles, then press Save.' }),
+        h('span', {
+          text: 'Click a panel in ' + app.name + ', resize it with handles or reorder its layer, then press Save.',
+        }),
       ),
       h(
         'div',

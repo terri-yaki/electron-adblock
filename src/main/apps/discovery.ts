@@ -1,7 +1,24 @@
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { DiscoveredApp, ProcessInfo } from '../../shared/types';
 import { delay, psQuote, runCommand, runPowerShell } from './command';
+import {
+  discoverCommonInstallApps,
+  discoverRegistryApps,
+  fileExists,
+  hasAppAsar,
+  isExcludedElectronTarget,
+  mergeDiscoveredApps,
+  normalizeExecutablePath,
+  sameWindowsPath,
+} from './detection';
+
+export {
+  discoverCommonInstallApps,
+  discoverRegistryApps,
+  discoverRunningApps,
+  findRunningAppFor,
+  isExcludedElectronTarget,
+} from './detection';
 
 const SHORTCUT_TIMEOUT_MS = 25_000;
 const TASKLIST_TIMEOUT_MS = 12_000;
@@ -212,16 +229,7 @@ export function parseCimProcessOutput(output: string): ProcessInfo[] {
   return processes;
 }
 
-export function isExcludedElectronTarget(exePath: string, ownExePath: string = process.execPath): boolean {
-  const normalized = path.win32.normalize(exePath.trim()).toLowerCase();
-  const baseName = path.win32.basename(normalized);
-  if (normalized === path.win32.normalize(ownExePath).toLowerCase()) return true;
-  if (baseName.includes('electron adblock') || baseName.includes('electron-adblock')) return true;
-  if (baseName === 'electron.exe' && normalized.includes('node_modules')) return true;
-  return false;
-}
-
-export async function discoverInstalledApps(): Promise<DiscoveredApp[]> {
+export async function discoverStartMenuApps(): Promise<DiscoveredApp[]> {
   const result = await runPowerShell(START_MENU_SCRIPT, SHORTCUT_TIMEOUT_MS);
   const entries = parseShortcutEntries(result.stdout);
   const asarCache = new Map<string, Promise<boolean>>();
@@ -250,6 +258,17 @@ export async function discoverInstalledApps(): Promise<DiscoveredApp[]> {
   }
   apps.sort((left, right) => left.name.localeCompare(right.name) || left.exePath.localeCompare(right.exePath));
   return apps;
+}
+
+// Merges Start Menu entries with registry uninstall entries and common install folders.
+// Start Menu wins for names and shortcut arguments; duplicate exe paths collapse.
+export async function discoverInstalledApps(): Promise<DiscoveredApp[]> {
+  const [startMenu, registry, commonInstallDirs] = await Promise.all([
+    discoverStartMenuApps(),
+    discoverRegistryApps(),
+    discoverCommonInstallApps(),
+  ]);
+  return mergeDiscoveredApps([startMenu, registry, commonInstallDirs]);
 }
 
 export async function listProcesses(): Promise<ProcessInfo[]> {
@@ -308,52 +327,6 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
-}
-
-function normalizeExecutablePath(rawPath: string): string {
-  let value = rawPath.trim();
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    value = value.slice(1, -1).trim();
-  }
-  if (!value) return '';
-  const normalized = path.win32.normalize(value);
-  return path.win32.isAbsolute(normalized) ? normalized : '';
-}
-
-async function fileExists(targetPath: string): Promise<boolean> {
-  try {
-    await fs.access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// An Electron app ships resources/app.asar next to the executable folder (or one level up).
-async function hasAppAsar(exePath: string, cache: Map<string, Promise<boolean>>): Promise<boolean> {
-  const exeDir = path.win32.dirname(exePath);
-  const baseDirs = [exeDir, path.win32.dirname(exeDir)];
-  for (const baseDir of baseDirs) {
-    const asarPath = path.win32.join(baseDir, 'resources', 'app.asar');
-    const key = asarPath.toLowerCase();
-    let check = cache.get(key);
-    if (!check) {
-      check = fileExists(asarPath);
-      cache.set(key, check);
-    }
-    if (await check) return true;
-  }
-  return false;
-}
-
-function normalizePathForCompare(targetPath: string): string {
-  let value = path.win32.normalize(targetPath.trim());
-  if (value.length > 3 && value.endsWith('\\')) value = value.slice(0, -1);
-  return value.toLowerCase();
-}
-
-function sameWindowsPath(left: string, right: string): boolean {
-  return normalizePathForCompare(left) === normalizePathForCompare(right);
 }
 
 function buildProcessQueryScript(exeName: string): string {

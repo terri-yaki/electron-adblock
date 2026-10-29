@@ -251,6 +251,98 @@ export interface ElectronProcessInfo {
   commandLine: string;
 }
 
+export interface LaunchBuiltAppOptions {
+  mock?: boolean;
+  profileDir?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface BuiltAppHandle {
+  readonly pid: number;
+  readonly port: number;
+  readonly profileDir: string;
+  output(): string;
+  close(): Promise<void>;
+}
+
+/** Launches the built app (build/main.cjs) with an isolated profile and debug port for UI harnesses. */
+export async function launchBuiltApp(options: LaunchBuiltAppOptions = {}): Promise<BuiltAppHandle> {
+  try {
+    await access(path.join(PROJECT_ROOT, 'build', 'main.cjs'));
+  } catch {
+    throw new Error('build/main.cjs is missing. Run "npm run build" first.');
+  }
+
+  const port = await allocateTcpPort();
+  const ownsProfile = options.profileDir === undefined;
+  const profileDir = options.profileDir ?? (await mkdtemp(path.join(os.tmpdir(), 'electron-adblock-app-')));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    EAB_DEBUG_PORT: String(port),
+    EAB_PROFILE_DIR: profileDir,
+    ...options.env,
+  };
+  if (options.mock) env.EAB_MOCK = '1';
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.ELECTRON_NO_ATTACH_CONSOLE;
+  delete env.NODE_OPTIONS;
+  delete env.NODE_USE_ENV_PROXY;
+
+  const child = spawn(ELECTRON_EXE, ['.'], {
+    cwd: PROJECT_ROOT,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  const outputChunks: string[] = [];
+  let outputSize = 0;
+  const recordOutput = (chunk: Buffer): void => {
+    const text = chunk.toString('utf8');
+    outputChunks.push(text);
+    outputSize += text.length;
+    while (outputSize > OUTPUT_LIMIT && outputChunks.length > 1) {
+      const removed = outputChunks.shift();
+      outputSize -= removed ? removed.length : 0;
+    }
+  };
+  child.stdout?.on('data', recordOutput);
+  child.stderr?.on('data', recordOutput);
+
+  let closePromise: Promise<void> | null = null;
+  return {
+    pid: child.pid ?? 0,
+    port,
+    profileDir,
+    output(): string {
+      return outputChunks.join('');
+    },
+    close(): Promise<void> {
+      if (closePromise) return closePromise;
+      closePromise = (async () => {
+        if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+          await killProcessTree(child.pid);
+          const stopped = await waitForChildExit(child, 10000);
+          if (!stopped) {
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // Already gone.
+            }
+            await waitForChildExit(child, 5000);
+          }
+        }
+        if (ownsProfile) {
+          await rm(profileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
+            () => undefined,
+          );
+        }
+      })();
+      return closePromise;
+    },
+  };
+}
+
 /** Lists electron.exe processes whose command line references the fixture main script. */
 export async function listElectronProcessesForFixture(
   fixturePath = FIXTURE_MAIN_PATH,

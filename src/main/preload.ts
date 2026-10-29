@@ -28,6 +28,7 @@ const api: AdblockApi = {
   addNetworkRule: (appId, pattern) => call('addNetworkRule', appId, pattern),
   updateNetworkRule: (appId, ruleId, patch) => call('updateNetworkRule', appId, ruleId, patch),
   removeNetworkRule: (appId, ruleId) => call('removeNetworkRule', appId, ruleId),
+  resetAppearance: (appId) => call('resetAppearance', appId),
   startPicker: (appId) => call('startPicker', appId),
   stopPicker: (appId) => call('stopPicker', appId),
   scanForAds: (appId) => call('scanForAds', appId),

@@ -598,6 +598,46 @@ async function removeLayoutRule(appId: string, ruleId: string): Promise<void> {
   else appView?.update();
 }
 
+function requestResetAppearance(appId: string): void {
+  const app = findApp(appId);
+  if (!app) return;
+  const count = app.cosmeticRules.length + app.layoutRules.length;
+  if (count === 0) {
+    toast('info', 'Nothing to reset in ' + app.name + '.');
+    return;
+  }
+  dialogs?.confirm({
+    title: 'Reset appearance',
+    message:
+      'This removes all hidden elements and layout/layer adjustments for ' +
+      app.name +
+      ' and restores the page. Network blocking stays on.',
+    confirmLabel: 'Reset appearance',
+    danger: true,
+    onConfirm: async () => {
+      await resetAppearance(appId);
+    },
+  });
+}
+
+async function resetAppearance(appId: string): Promise<void> {
+  const app = findApp(appId);
+  if (!app) return;
+  if (typeof window.adblock.resetAppearance !== 'function') {
+    toast('error', 'Reset appearance is not available in this build.');
+    return;
+  }
+  const updated = await callApi('Could not reset appearance', window.adblock.resetAppearance(appId));
+  if (!updated) return;
+  if (state.picker?.appId === appId) state.picker = null;
+  if (state.scan?.appId === appId) {
+    state.scan = { ...state.scan, hiddenSelectors: [] };
+  }
+  applyApp(updated);
+  appView?.update();
+  sidebar?.update();
+}
+
 async function updateSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<boolean> {
   const patch = { [key]: value } as Partial<Settings>;
   const settings = await callApi('Could not save settings', window.adblock.updateSettings(patch));
@@ -937,6 +977,7 @@ const controller: Controller = {
   addLayoutRule,
   updateLayoutRule,
   removeLayoutRule,
+  requestResetAppearance,
   updateSetting,
   savePickerHotkey,
   clearActivity,

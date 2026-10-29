@@ -255,6 +255,8 @@ function sanitizeApp(value: unknown): PersistedApp | null {
   };
   const debugPort = pickPort(value.debugPort);
   if (debugPort !== undefined) app.debugPort = debugPort;
+  const inspectPort = pickPort(value.inspectPort);
+  if (inspectPort !== undefined) app.inspectPort = inspectPort;
   if (typeof value.lastOpenedAt === 'number' && Number.isFinite(value.lastOpenedAt) && value.lastOpenedAt > 0) {
     app.lastOpenedAt = value.lastOpenedAt;
   }
@@ -296,6 +298,18 @@ function pickLayoutSource(value: unknown): LayoutRuleSource {
   return 'manual';
 }
 
+function isValidLayoutValue(property: string, value: string): boolean {
+  if (property === 'z-index') {
+    if (!/^-?\d{1,10}$/.test(value)) return false;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= -2147483648 && numeric <= 2147483647;
+  }
+  if (property === 'position') {
+    return ['static', 'relative', 'absolute', 'fixed', 'sticky'].includes(value);
+  }
+  return true;
+}
+
 function sanitizeLayoutDeclarations(value: unknown): Record<string, string> {
   const output: Record<string, string> = {};
   if (!isRecord(value)) return output;
@@ -307,6 +321,9 @@ function sanitizeLayoutDeclarations(value: unknown): Record<string, string> {
     if (!text || text.length > 120) continue;
     if (/[;{}<>\\]/.test(text)) continue;
     if (/url\s*\(|expression\s*\(|@import/i.test(text)) continue;
+    if (property === 'z-index' || property === 'position') {
+      if (!isValidLayoutValue(property, text)) continue;
+    }
     output[property] = text;
     if (Object.keys(output).length >= 20) break;
   }

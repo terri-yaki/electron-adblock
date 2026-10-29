@@ -16,7 +16,9 @@ const PREVIEW_ATTR = 'data-electron-adblock-layout-preview';
 const MAX_Z_INDEX = '2147483647';
 const HANDLE_SIZE = 12;
 const MIN_SIZE = 24;
-const HINT_TEXT = 'Click a panel to adjust it, drag the handles, then Save | Esc cancels';
+const LAYER_MIN = -100000;
+const LAYER_MAX = 100000;
+const HINT_TEXT = 'Click a panel to adjust it, resize with handles, reorder layers, then Save | Esc cancels';
 
 const HANDLE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
 type HandleDirection = (typeof HANDLE_DIRECTIONS)[number];
@@ -56,6 +58,10 @@ const TOOLBAR_ACTIONS: ReadonlyArray<{ action: string; label: string; primary?: 
   { action: 'fill-height', label: 'Fill height' },
   { action: 'auto', label: 'Auto' },
   { action: 'reset', label: 'Reset' },
+  { action: 'front', label: 'Front' },
+  { action: 'forward', label: 'Forward' },
+  { action: 'backward', label: 'Backward' },
+  { action: 'back', label: 'Back' },
   { action: 'save', label: 'Save', primary: true },
   { action: 'cancel', label: 'Cancel' },
 ];
@@ -277,6 +283,8 @@ export class LayoutEditor {
       zIndex: MAX_Z_INDEX,
       boxSizing: 'border-box',
       alignItems: 'center',
+      flexWrap: 'wrap',
+      maxWidth: '92vw',
       gap: '6px',
       margin: '0',
       padding: '6px',
@@ -557,6 +565,12 @@ export class LayoutEditor {
       case 'reset':
         this.resetDeclarations();
         break;
+      case 'front':
+      case 'forward':
+      case 'backward':
+      case 'back':
+        this.applyLayerAction(action);
+        break;
       case 'save':
         this.save();
         break;
@@ -580,8 +594,71 @@ export class LayoutEditor {
     if (!this.selection) return;
     this.selection.declarations = {};
     this.preview.clear();
+    // The label must show the selected panel right away, not a stale hover.
+    this.hovered = null;
+    this.hoverInfo = '';
+    if (this.hoverBox) this.hoverBox.style.display = 'none';
     this.renderSelection();
     this.updateLabel();
+    this.requestSync();
+  }
+
+  // Stacking order: static panels gain position relative first, then a numeric z-index.
+  private applyLayerAction(action: 'front' | 'forward' | 'backward' | 'back'): void {
+    if (!this.selection) return;
+    const element = this.selection.element;
+    const declarations: Record<string, string> = { ...this.selection.declarations };
+    const computedPosition = this.computedValue(element, 'position');
+    if (computedPosition.length === 0 || computedPosition === 'static') {
+      declarations.position = 'relative';
+    }
+    const current = this.currentLayerValue(element, declarations);
+    const range = this.parentLayerRange(element);
+    let next = current;
+    if (action === 'front') next = range.max + 1;
+    else if (action === 'forward') next = current + 1;
+    else if (action === 'backward') next = current - 1;
+    else if (action === 'back') next = range.min - 1;
+    next = Math.max(LAYER_MIN, Math.min(LAYER_MAX, Math.round(next)));
+    declarations['z-index'] = String(next);
+    this.selection.declarations = declarations;
+    this.renderPreview();
+    this.updateLabel();
+  }
+
+  private currentLayerValue(element: Element, declarations: Record<string, string>): number {
+    const declaredValue = declarations['z-index'];
+    if (typeof declaredValue === 'string') {
+      const declared = Number.parseInt(declaredValue, 10);
+      if (Number.isFinite(declared)) return declared;
+    }
+    const computedLayer = Number.parseInt(this.computedValue(element, 'z-index'), 10);
+    return Number.isFinite(computedLayer) ? computedLayer : 0;
+  }
+
+  // Layer range across the panel's parent children, including the panel itself.
+  private parentLayerRange(element: Element): { max: number; min: number } {
+    const values: number[] = [];
+    const parent = element.parentElement;
+    const children = parent ? parent.children : [];
+    for (const child of children) {
+      const parsed = Number.parseInt(this.computedValue(child as Element, 'z-index'), 10);
+      values.push(Number.isFinite(parsed) ? parsed : 0);
+    }
+    if (values.length === 0) {
+      values.push(this.currentLayerValue(element, this.selection ? this.selection.declarations : {}));
+    }
+    return { max: Math.max(...values), min: Math.min(...values) };
+  }
+
+  private computedValue(element: Element, property: string): string {
+    try {
+      const view = this.doc.defaultView;
+      if (!view) return '';
+      return view.getComputedStyle(element).getPropertyValue(property).trim();
+    } catch {
+      return '';
+    }
   }
 
   private renderPreview(): void {
@@ -704,7 +781,7 @@ export class LayoutEditor {
     let text = HINT_TEXT;
     if (this.drag) {
       text = HINT_TEXT + ' | resizing ' + this.drag.handle;
-    } else if (this.hovered && this.hoverInfo) {
+    } else if (this.hovered && this.hoverInfo && !(this.selection && this.hovered === this.selection.element)) {
       text = HINT_TEXT + ' | hover: ' + this.hoverInfo;
     } else if (this.selection) {
       text =
@@ -714,9 +791,18 @@ export class LayoutEditor {
         ' ' +
         this.selection.selector +
         ' | ' +
-        matchesText(this.selection.matches);
+        matchesText(this.selection.matches) +
+        ' | layer z: ' +
+        this.layerLabelValue(this.selection);
     }
     this.label.textContent = text;
+  }
+
+  private layerLabelValue(selection: SelectionState): string {
+    const declaredValue = selection.declarations['z-index'];
+    if (typeof declaredValue === 'string' && declaredValue.length > 0) return declaredValue;
+    const computedLayer = this.computedValue(selection.element, 'z-index');
+    return computedLayer.length > 0 ? computedLayer : 'auto';
   }
 
   private elementAt(x: number, y: number): Element | null {

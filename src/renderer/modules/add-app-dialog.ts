@@ -175,7 +175,7 @@ export function openAddAppDialog(ctx: Controller): void {
       case 'preset':
         return 'Preset';
       default:
-        return 'Start menu';
+        return 'Installed';
     }
   }
 

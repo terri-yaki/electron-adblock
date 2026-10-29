@@ -182,6 +182,7 @@ export interface AdblockApi {
   addNetworkRule(appId: string, pattern: string): Promise<AppView>;
   updateNetworkRule(appId: string, ruleId: string, patch: NetworkRulePatch): Promise<AppView>;
   removeNetworkRule(appId: string, ruleId: string): Promise<AppView>;
+  resetAppearance(appId: string): Promise<AppView>;
   startPicker(appId: string): Promise<AppView>;
   stopPicker(appId: string): Promise<AppView>;
   scanForAds(appId: string): Promise<AdCandidate[]>;
@@ -216,6 +217,7 @@ export interface PersistedApp {
   source: AppSource;
   enabled: boolean;
   debugPort?: number;
+  inspectPort?: number;
   addedAt: number;
   lastOpenedAt?: number;
   cosmeticRules: CosmeticRule[];

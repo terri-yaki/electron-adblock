@@ -453,6 +453,29 @@ export class MockService implements ServiceApi {
     ];
   }
 
+  async resetAppearance(appId: string): Promise<AppView> {
+    const app = this.find(appId);
+    const removed = app.cosmeticRules.length + app.layoutRules.length;
+    app.cosmeticRules = [];
+    app.layoutRules = [];
+    app.stats = { ...app.stats, hiddenElements: 0 };
+    app.pickerActive = false;
+    app.layoutEditing = false;
+    this.emit({ type: 'app', app });
+    this.emit({ type: 'picker', appId, active: false, picked: 0 });
+    this.emit({ type: 'layout', appId, active: false });
+    this.emit({
+      type: 'toast',
+      level: 'success',
+      message:
+        removed === 0
+          ? 'Nothing to reset in ' + app.name
+          : 'Restored original appearance in ' + app.name + ' (' + removed + ' rule' + (removed === 1 ? '' : 's') + ' removed)',
+      appId,
+    });
+    return app;
+  }
+
   async startLayoutEditor(appId: string): Promise<AppView> {
     const app = this.find(appId);
     app.layoutEditing = true;

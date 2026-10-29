@@ -6,7 +6,12 @@ import { icon } from '../icons';
 import { formatNumber, plural } from '../format';
 import { button, cosmeticSourceTag, emptyState, iconButton, networkSourceTag, toggle } from '../primitives';
 
-function panelHead(title: string, count: HTMLElement, description: string): HTMLElement {
+function panelHead(
+  title: string,
+  count: HTMLElement,
+  description: string,
+  actions: HTMLElement[] = [],
+): HTMLElement {
   return h(
     'header',
     { class: 'panel-head' },
@@ -16,6 +21,7 @@ function panelHead(title: string, count: HTMLElement, description: string): HTML
       h('div', { class: 'panel-title-row' }, h('h2', { class: 'panel-title', text: title }), count),
       h('p', { class: 'panel-desc', text: description }),
     ),
+    actions.length > 0 ? h('div', { class: 'panel-actions' }, ...actions) : null,
   );
 }
 
@@ -37,6 +43,14 @@ export const hiddenTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
   const addBtn = button({ label: 'Add rule', iconName: 'plus', variant: 'secondary', type: 'submit' });
   const addLabel = addBtn.querySelector('.btn-label') as HTMLElement;
   const form = h('form', { class: 'add-rule-row' }, input, addBtn);
+  const resetIcon = iconButton({
+    iconName: 'reset',
+    label: 'Reset appearance',
+    title: 'Remove all hidden elements and layout/layer fixes',
+    onClick: () => {
+      ctx.requestResetAppearance(app.id);
+    },
+  });
   const layoutCalloutButton = button({
     label: 'Adjust layout',
     iconName: 'layout',
@@ -54,7 +68,7 @@ export const hiddenTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
       'div',
       { class: 'layout-callout-copy' },
       h('strong', { text: 'Leftover gap after hiding an ad?' }),
-      h('p', { text: 'Layout fixes resize the panels around the hole left behind.' }),
+      h('p', { text: 'Layout fixes resize panels or reorder layers around the hole left behind.' }),
     ),
     layoutCalloutButton,
   );
@@ -65,6 +79,7 @@ export const hiddenTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
       'Hidden elements',
       countEl,
       'CSS selectors applied to pages in ' + app.name + '. Toggle one to pause it without deleting it.',
+      [resetIcon],
     ),
     form,
     h('p', {
@@ -149,6 +164,9 @@ export const hiddenTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
     app = next;
     countEl.textContent = formatNumber(app.cosmeticRules.length);
     const pickerActive = Boolean(ctx.state.picker?.active && ctx.state.picker.appId === app.id);
+    const resetCount = app.cosmeticRules.length + app.layoutRules.length;
+    resetIcon.title = resetCount > 0 ? 'Remove all hidden elements and layout/layer fixes' : 'Nothing to reset';
+    resetIcon.setAttribute('aria-label', resetCount > 0 ? 'Reset appearance' : 'Nothing to reset');
     layoutCallout.hidden = app.cosmeticRules.length === 0;
     layoutCalloutButton.disabled = !app.attached || pickerActive;
     layoutCalloutButton.title = !app.attached

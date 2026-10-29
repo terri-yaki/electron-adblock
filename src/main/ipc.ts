@@ -27,6 +27,7 @@ const METHODS: ReadonlyArray<MethodName> = [
   'addNetworkRule',
   'updateNetworkRule',
   'removeNetworkRule',
+  'resetAppearance',
   'startPicker',
   'stopPicker',
   'scanForAds',

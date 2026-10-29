@@ -44,6 +44,8 @@ const PROPERTY_ALLOWLIST: ReadonlySet<string> = new Set([
   'bottom',
   'left',
   'border-radius',
+  'z-index',
+  'position',
 ]);
 
 const GRID_PREFIX = 'grid-';
@@ -55,6 +57,10 @@ const UNSAFE_PROTOCOL_RE = /javascript\s*:/i;
 const COMMENT_RE = /\/\*/;
 const MAX_PROPERTY_LENGTH = 48;
 const MAX_VALUE_LENGTH = 120;
+const Z_INDEX_MIN = -2147483648;
+const Z_INDEX_MAX = 2147483647;
+const Z_INDEX_VALUE_RE = /^-?\d+$/;
+const POSITION_VALUES: ReadonlySet<string> = new Set(['static', 'relative', 'absolute', 'fixed', 'sticky']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -68,10 +74,26 @@ export function isSafeLayoutProperty(property: string): boolean {
   return PROPERTY_ALLOWLIST.has(name);
 }
 
-export function isSafeLayoutValue(value: unknown): boolean {
+export function isSafeZIndexValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!Z_INDEX_VALUE_RE.test(text)) return false;
+  const numeric = Number(text);
+  return Number.isInteger(numeric) && numeric >= Z_INDEX_MIN && numeric <= Z_INDEX_MAX;
+}
+
+export function isSafePositionValue(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  return POSITION_VALUES.has(value.trim().toLowerCase());
+}
+
+export function isSafeLayoutValue(value: unknown, property?: string): boolean {
   if (typeof value !== 'string') return false;
   const text = value.trim();
   if (text.length === 0 || text.length > MAX_VALUE_LENGTH) return false;
+  const name = typeof property === 'string' ? property.trim().toLowerCase() : '';
+  if (name === 'z-index') return isSafeZIndexValue(text);
+  if (name === 'position') return isSafePositionValue(text);
   if (CONTROL_CHAR_RE.test(text)) return false;
   if (UNSAFE_VALUE_RE.test(text)) return false;
   if (UNSAFE_FUNCTION_RE.test(text)) return false;
@@ -85,7 +107,7 @@ export function sanitizeDeclarations(input: unknown): Record<string, string> {
   if (!isRecord(input)) return result;
   for (const [rawProperty, rawValue] of Object.entries(input)) {
     const property = rawProperty.trim().toLowerCase();
-    if (!isSafeLayoutProperty(property) || !isSafeLayoutValue(rawValue)) continue;
+    if (!isSafeLayoutProperty(property) || !isSafeLayoutValue(rawValue, property)) continue;
     result[property] = (rawValue as string).trim();
   }
   return result;

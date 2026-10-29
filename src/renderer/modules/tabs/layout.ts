@@ -12,17 +12,38 @@ export interface ParsedDeclarations {
 }
 
 const PROPERTY_PATTERN = /^-{0,2}[a-zA-Z][a-zA-Z0-9-]*$/;
+const LAYER_PROPERTIES = new Set([
+  'z-index',
+  'position',
+  'order',
+  'inset',
+  'top',
+  'right',
+  'bottom',
+  'left',
+  'transform',
+  'isolation',
+  'mix-blend-mode',
+]);
+
+function isLayerProperty(property: string): boolean {
+  return LAYER_PROPERTIES.has(property.toLowerCase());
+}
 
 export function parseDeclarations(input: string): ParsedDeclarations {
   const text = input.trim();
-  if (!text) return { declarations: {}, error: 'Add at least one declaration, for example width: 100%.' };
+  if (!text)
+    return {
+      declarations: {},
+      error: 'Add at least one declaration, for example z-index: 5; position: relative.',
+    };
   const declarations: Record<string, string> = {};
   for (const chunk of text.split(';')) {
     const part = chunk.trim();
     if (!part) continue;
     const colon = part.indexOf(':');
     if (colon <= 0) {
-      return { declarations: {}, error: 'Use CSS declarations such as width: 100%; flex: 1.' };
+      return { declarations: {}, error: 'Use CSS declarations such as z-index: 5; position: relative.' };
     }
     const property = part.slice(0, colon).trim();
     const value = part.slice(colon + 1).trim();
@@ -38,7 +59,11 @@ export function parseDeclarations(input: string): ParsedDeclarations {
     declarations[property] = value;
   }
   const count = Object.keys(declarations).length;
-  if (count === 0) return { declarations: {}, error: 'Add at least one declaration, for example width: 100%.' };
+  if (count === 0)
+    return {
+      declarations: {},
+      error: 'Add at least one declaration, for example z-index: 5; position: relative.',
+    };
   if (count > 20) return { declarations: {}, error: 'Use 20 declarations or fewer.' };
   return { declarations };
 }
@@ -70,7 +95,7 @@ export const layoutTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
     id: 'layout-declarations-input',
     class: 'text-input layout-decl-input',
     rows: '2',
-    placeholder: 'width: 100%; flex: 1',
+    placeholder: 'z-index: 5; position: relative',
     'aria-label': 'Layout declarations',
     spellcheck: 'false',
   });
@@ -105,7 +130,7 @@ export const layoutTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
         h('div', { class: 'panel-title-row' }, h('h2', { class: 'panel-title', text: 'Layout fixes' }), countEl),
         h('p', {
           class: 'panel-desc',
-          text: 'Hiding an ad can leave empty space. Resize and reflow the panels around it.',
+          text: 'Hiding an ad can leave empty space. Resize the panels around it, or reorder overlapping layers.',
         }),
       ),
       headerActions,
@@ -113,12 +138,12 @@ export const layoutTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
     form,
     h('p', {
       class: 'form-hint',
-      text: 'One or more CSS declarations separated by semicolons, applied to every matching element.',
+      text: 'Examples: height: auto closes a gap; z-index: 5; position: relative reorders a layer. Layer declarations are highlighted blue.',
     }),
     listEl,
     h('p', {
       class: 'panel-note',
-      text: 'Use Adjust layout for the visual editor, or declare sizes by hand. Rules apply to every page in ' + app.name + '.',
+      text: 'Adjust layout opens the visual editor with resize handles and layer controls. Or declare size and z-index by hand; rules apply to every page in ' + app.name + '.',
     }),
   );
 
@@ -161,11 +186,22 @@ export const layoutTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
 
   function renderHeaderAction(): void {
     const pickerActive = Boolean(ctx.state.picker?.active && ctx.state.picker.appId === app.id);
+    const resetButton = button({
+      label: 'Reset appearance',
+      iconName: 'reset',
+      variant: 'secondary',
+      size: 'sm',
+      title: 'Remove all hidden elements and layout/layer fixes for ' + app.name,
+      onClick: () => {
+        ctx.requestResetAppearance(app.id);
+      },
+    });
     if (app.layoutEditing) {
-      headerActions.replaceChildren(tag('Editing on page', 'blue'));
+      headerActions.replaceChildren(tag('Editing on page', 'blue'), resetButton);
       return;
     }
     headerActions.replaceChildren(
+      resetButton,
       button({
         label: 'Adjust layout',
         iconName: 'layout',
@@ -186,13 +222,14 @@ export const layoutTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
   function declarationChips(rule: LayoutRule): HTMLElement[] {
     const entries = Object.entries(rule.declarations);
     if (entries.length === 0) return [h('span', { class: 'decl-chip mono', text: 'no declarations' })];
-    return entries.map(([property, value]) =>
-      h('span', {
-        class: 'decl-chip mono',
-        title: property + ': ' + value,
+    return entries.map(([property, value]) => {
+      const layer = isLayerProperty(property);
+      return h('span', {
+        class: 'decl-chip mono' + (layer ? ' is-layer' : ''),
+        title: property + ': ' + value + (layer ? ' (layer order)' : ''),
         text: property + ': ' + value,
-      }),
-    );
+      });
+    });
   }
 
   function renderRule(rule: LayoutRule): HTMLElement {
@@ -244,7 +281,7 @@ export const layoutTab: TabFactory = (ctx: Controller, app: AppView): TabView =>
         emptyState({
           iconName: 'layout',
           title: 'No layout fixes yet',
-          body: 'Hiding an ad can leave a gap. Use Adjust layout, or declare sizes below.',
+          body: 'Hiding an ad can leave a gap. Use Adjust layout, or declare size and layer rules below.',
           compact: true,
         }),
       );

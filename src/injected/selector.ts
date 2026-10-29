@@ -421,13 +421,18 @@ export function describeElement(element: Element): string {
 export function buildSelector(element: Element, documentRef?: Document): BuiltSelector {
   const doc = documentRef ?? element.ownerDocument;
   const tag = elementTagName(element);
-  const candidates: string[] = [];
-  const push = (candidate: string | null): void => {
-    if (candidate) candidates.push(candidate);
+  interface Candidate {
+    selector: string;
+    /** Ad-semantic selectors may intentionally match many elements. */
+    canBeBroad: boolean;
+  }
+  const candidates: Candidate[] = [];
+  const push = (candidate: string | null, canBeBroad = false): void => {
+    if (candidate) candidates.push({ selector: candidate, canBeBroad });
   };
 
   for (const attribute of ['data-testid', 'data-qa', 'data-ad', 'data-ad-slot', 'data-adunit', 'data-slot', 'data-google-query-id']) {
-    push(attributeSelector(element, attribute));
+    push(attributeSelector(element, attribute), attribute.includes('-ad') || attribute === 'data-google-query-id');
   }
   push(ariaSelector(element));
 
@@ -436,31 +441,36 @@ export function buildSelector(element: Element, documentRef?: Document): BuiltSe
 
   const classes = stableClassTokens(element);
   for (const token of classes.filter((classToken) => hasAdKeyword(classToken))) {
-    push('.' + escapeIdent(token));
+    push('.' + escapeIdent(token), true);
   }
 
-  if (tag === 'iframe') {
-    const src = element.getAttribute('src');
-    const host = src ? adHostForUrl(src, doc.baseURI) : null;
-    if (host) push('iframe[src*="' + escapeAttributeValue(host) + '"]');
+  const src = element.getAttribute('src');
+  if (tag === 'iframe' && src) {
+    const host = adHostForUrl(src, doc.baseURI);
+    if (host) push('iframe[src*="' + escapeAttributeValue(host) + '"]', true);
   }
 
-  const plainClasses = classes.filter((token) => !hasAdKeyword(token)).slice(0, MAX_CLASS_TOKENS);
-  const [firstClass, secondClass] = plainClasses;
-  if (firstClass && secondClass) {
-    push(tag + '.' + escapeIdent(firstClass) + '.' + escapeIdent(secondClass));
+  // Progressive class combinations: two, three and four stable classes. Tailwind-style UIs
+  // often have generic first classes ("flex w-full") so more tokens are needed for precision.
+  const plainClasses = classes.filter((token) => !hasAdKeyword(token)).slice(0, MAX_CLASS_TOKENS + 2);
+  for (let count = Math.min(plainClasses.length, 4); count >= 2; count -= 1) {
+    push(tag + plainClasses.slice(0, count).map((token) => '.' + escapeIdent(token)).join(''));
   }
-  if (firstClass) push(tag + '.' + escapeIdent(firstClass));
+  if (plainClasses.length >= 1) push(tag + '.' + escapeIdent(plainClasses[0]));
   push(nthOfTypePath(element, doc));
 
+  const GENERIC_MATCH_LIMIT = 24;
+  let best: BuiltSelector | null = null;
   for (const candidate of candidates) {
-    if (candidate.length > MAX_SELECTOR_LENGTH) continue;
-    if (!isSafeSelector(candidate)) continue;
-    if (!matchesElement(element, candidate)) continue;
-    const matchCount = countMatches(doc, candidate);
+    if (candidate.selector.length > MAX_SELECTOR_LENGTH) continue;
+    if (!isSafeSelector(candidate.selector)) continue;
+    if (!matchesElement(element, candidate.selector)) continue;
+    const matchCount = countMatches(doc, candidate.selector);
     if (matchCount < 1) continue;
-    return { selector: candidate, matchCount };
+    const built: BuiltSelector = { selector: candidate.selector, matchCount };
+    if (candidate.canBeBroad || matchCount <= GENERIC_MATCH_LIMIT) return built;
+    if (!best || matchCount < best.matchCount) best = built;
   }
-
+  if (best) return best;
   return { selector: tag, matchCount: countMatches(doc, tag) };
 }

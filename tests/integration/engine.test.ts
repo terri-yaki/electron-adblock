@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { createEngine } from '../../src/main/engine/engine';
+import { createInspectorEngine } from '../../src/main/engine/inspector-engine';
 import type {
   AppStats,
   CosmeticRule,
@@ -11,9 +12,17 @@ import type {
   EngineFilterConfig,
 } from '../../src/shared/types';
 import { startAdServer, type AdServer } from '../helpers/ad-server';
-import { connectToPage, delay, type CdpConnection, type CdpPage } from '../helpers/cdp';
+import {
+  CdpConnection,
+  connectToPage,
+  delay,
+  fetchTargets,
+  type CdpPage,
+  type TargetInfo,
+} from '../helpers/cdp';
 import {
   PROJECT_ROOT,
+  allocateTcpPort,
   isProcessAlive,
   launchFixture,
   listElectronProcessesForFixture,
@@ -151,6 +160,29 @@ async function waitForServerCount(
       pathname +
       '; counts=' +
       JSON.stringify(server.counts()),
+  );
+}
+
+async function waitForNodeInspectorTarget(port: number, timeoutMs = 15000): Promise<TargetInfo> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError: Error | null = null;
+  while (Date.now() < deadline) {
+    try {
+      const targets = await fetchTargets(port);
+      const nodeTarget = targets.find((target) => target.type === 'node');
+      if (nodeTarget) return nodeTarget;
+      lastError = new Error('the node target is not listed yet');
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+    await delay(100);
+  }
+  throw new Error(
+    'timed out after ' +
+      timeoutMs +
+      'ms waiting for the Node inspector target on 127.0.0.1:' +
+      port +
+      (lastError ? ': ' + lastError.message : ''),
   );
 }
 
@@ -371,6 +403,56 @@ test(
       'getComputedStyle(document.querySelector(".content")).width === ' + JSON.stringify(initialWidth),
       { timeoutMs: 8000, description: 'layout width restored after clearing layout rules' },
     );
+
+    // Layer declarations must apply and clear the same way.
+    const initialZIndex = await page.evaluate<string>(
+      'getComputedStyle(document.querySelector(".content")).zIndex',
+    );
+    harness.config.layout = [
+      {
+        id: 'lr-layer',
+        selector: '.content',
+        declarations: { position: 'relative', 'z-index': '7' },
+        enabled: true,
+        source: 'layout',
+        createdAt: Date.now(),
+      },
+    ];
+    await harness.engine.updateFilters();
+    await page.waitFor('getComputedStyle(document.querySelector(".content")).zIndex === "7"', {
+      timeoutMs: 8000,
+      description: 'layer rule z-index applied',
+    });
+    assert.equal(
+      await page.evaluate<string>('getComputedStyle(document.querySelector(".content")).position'),
+      'relative',
+      'layer rule position must apply',
+    );
+
+    harness.config.layout = [];
+    await harness.engine.updateFilters();
+    await page.waitFor(
+      'getComputedStyle(document.querySelector(".content")).zIndex === ' + JSON.stringify(initialZIndex),
+      { timeoutMs: 8000, description: 'layer z-index restored after clearing layout rules' },
+    );
+
+    // Clearing cosmetic and layout rules together (what resetAppearance does) restores the page.
+    harness.config.cosmetic = [];
+    harness.config.layout = [];
+    await harness.engine.updateFilters();
+    await page.waitFor('getComputedStyle(document.querySelector(".ad-banner")).display !== "none"', {
+      timeoutMs: 8000,
+      description: '.ad-banner restored after clearing cosmetic rules',
+    });
+    await page.waitFor(
+      'getComputedStyle(document.querySelector("aside.sponsor-slot")).display !== "none"',
+      { timeoutMs: 8000, description: 'aside.sponsor-slot restored after clearing cosmetic rules' },
+    );
+    assert.equal(
+      await page.evaluate<string>('getComputedStyle(document.querySelector(".content")).zIndex'),
+      initialZIndex,
+      'z-index must stay at its original value after the full reset',
+    );
   },
 );
 
@@ -455,6 +537,106 @@ test(
       'getComputedStyle(document.querySelector("#pick-target")).display === "none"',
       { timeoutMs: 8000, description: 'picked selector applied after navigation' },
     );
+  },
+);
+
+test(
+  'inspector engine never steals a CDP-attached window',
+  { timeout: 120_000 },
+  async (t) => {
+    const server = await startAdServer();
+    const inspectorPort = await allocateTcpPort();
+    const fixture = await launchFixture({
+      url: server.pageUrl,
+      cleanup: [server],
+      extraArgs: ['--inspect=' + String(inspectorPort)],
+    });
+    const { connection, page } = await connectToPage(fixture.port);
+
+    let harness: EngineHarness | null = null;
+    let inspectorEngine: Engine | null = null;
+    trackCleanup(t, [
+      async () => {
+        if (inspectorEngine) await inspectorEngine.disconnect();
+      },
+      async () => {
+        if (harness) await harness.engine.disconnect();
+      },
+      async () => {
+        await page.close();
+      },
+      async () => {
+        await connection.close();
+      },
+      async () => {
+        await fixture.close();
+      },
+      async () => {
+        await server.close();
+      },
+    ]);
+
+    await page.waitFor('window.__pageReady === "page1" && document.readyState === "complete"', {
+      timeoutMs: 15000,
+      description: 'page1 load',
+    });
+
+    // The normal CDP engine attaches first; this is the OP.GG-style window path.
+    harness = await launchEngine(fixture.port, { cosmetic: [cosmeticRule('.ad-banner')] });
+    await page.waitFor('getComputedStyle(document.querySelector(".ad-banner")).display === "none"', {
+      timeoutMs: 8000,
+      description: 'CDP engine active before the inspector connects',
+    });
+
+    const nodeTarget = await waitForNodeInspectorTarget(inspectorPort);
+    const cdpHarness = harness;
+    inspectorEngine = createInspectorEngine({
+      appId: ENGINE_APP_ID,
+      injectedScript: await loadInjectedScript(),
+      getConfig: () => cdpHarness.config,
+      onEvent: () => undefined,
+      inspectorPort,
+    });
+    await inspectorEngine.connect(inspectorPort);
+    assert.equal(inspectorEngine.connected, true, 'the inspector engine should connect to the node target');
+
+    const inspectorStats = inspectorEngine.stats();
+    assert.equal(
+      inspectorStats.pages,
+      0,
+      'the inspector must not count or steal a window already attached by the CDP engine',
+    );
+    assert.equal(inspectorStats.hiddenElements, 0, 'the inspector must not apply filters to a CDP-owned window');
+
+    // The bootstrap can see the window in the main process; pages stays 0 because it skipped it.
+    assert.ok(nodeTarget.webSocketDebuggerUrl, 'the node inspector target must expose a websocket URL');
+    const nodeConnection = await CdpConnection.connect(nodeTarget.webSocketDebuggerUrl as string);
+    try {
+      const evaluated = await nodeConnection.send('Runtime.evaluate', {
+        expression:
+          '(() => { try { const electron = process.mainModule.require("electron"); return electron.webContents.getAllWebContents().map((wc) => ({ url: wc.getURL(), type: wc.getType() })); } catch (error) { return { error: String(error) }; } })()',
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      const remote = evaluated.result as { value?: unknown } | undefined;
+      const windows = Array.isArray(remote?.value) ? (remote?.value as Array<Record<string, unknown>>) : [];
+      assert.ok(
+        windows.some((window) => String(window.url ?? '').includes('127.0.0.1')),
+        'the main-process inspector must see the fixture window it refused to steal: ' + JSON.stringify(remote?.value),
+      );
+    } finally {
+      await nodeConnection.close();
+    }
+    assert.equal(cdpHarness.engine.connected, true, 'the CDP engine must stay connected');
+    assert.equal(
+      await page.computedDisplay('.ad-banner'),
+      'none',
+      'CDP engine filters must keep working while the inspector is connected',
+    );
+
+    await inspectorEngine.disconnect();
+    assert.equal(cdpHarness.engine.connected, true, 'the CDP engine must survive the inspector disconnect');
+    assert.equal(await page.computedDisplay('.ad-banner'), 'none');
   },
 );
 

@@ -31,7 +31,8 @@ export type IconName =
   | 'more'
   | 'grid'
   | 'filter'
-  | 'layout';
+  | 'layout'
+  | 'reset';
 
 const PATHS: Record<IconName, string> = {
   logo: '<path d="M12 3l7 2.6v5.1c0 4.4-2.9 7.5-7 9.3-4.1-1.8-7-4.9-7-9.3V5.6L12 3z"/><path d="M13.3 8.1L9.2 12.6h2.8l-1.3 3.4 4.1-4.5h-2.8l1.3-3.4z" fill="currentColor" stroke="none"/>',
@@ -67,6 +68,7 @@ const PATHS: Record<IconName, string> = {
   grid: '<rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.6"/>',
   filter: '<path d="M3.5 5.5h17l-6.5 7.6v5.4l-4 1.8v-7.2L3.5 5.5z"/>',
   layout: '<rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9.5 4v16"/><path d="M9.5 12h11"/>',
+  reset: '<path d="M3.5 12a8.5 8.5 0 1 0 2.7-6.2"/><path d="M3.5 3.5v5h5"/>',
 };
 
 export function icon(name: IconName, size = 16, className = ''): SVGSVGElement {

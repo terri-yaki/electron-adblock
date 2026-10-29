@@ -16,6 +16,8 @@ import {
   declarationsToCss,
   isSafeLayoutProperty,
   isSafeLayoutValue,
+  isSafePositionValue,
+  isSafeZIndexValue,
   layoutRuleCss,
   sanitizeDeclarations,
   sanitizeLayoutRules,
@@ -181,6 +183,8 @@ test('isSafeLayoutProperty only allows layout-move properties', () => {
     'bottom',
     'left',
     'border-radius',
+    'z-index',
+    'position',
     'grid-template-columns',
     'grid-column',
     'grid-row',
@@ -191,7 +195,6 @@ test('isSafeLayoutProperty only allows layout-move properties', () => {
     'color',
     'background',
     'background-image',
-    'position',
     'display',
     'font-size',
     'behavior',
@@ -253,6 +256,7 @@ test('sanitizeDeclarations keeps only safe allowlisted pairs', () => {
     width: '100%',
     'max-width': 'none',
     flex: '1 1 auto',
+    position: 'absolute',
     'grid-template-columns': 'repeat(2, 1fr)',
   });
   assert.deepEqual(sanitizeDeclarations({ WIDTH: '50%' }), { width: '50%' });
@@ -284,4 +288,44 @@ test('sanitizeLayoutRules filters, dedupes and keeps the last rule per selector'
   ]);
   assert.deepEqual(sanitizeLayoutRules(null), []);
   assert.deepEqual(sanitizeLayoutRules({}), []);
+});
+
+test('z-index values must be integers inside the 32-bit CSS range', () => {
+  for (const value of ['0', '5', '-3', ' 42 ', '2147483647', '-2147483648']) {
+    assert.equal(isSafeZIndexValue(value), true, value);
+    assert.equal(isSafeLayoutValue(value, 'z-index'), true, value);
+  }
+  for (const value of ['auto', '5.5', '1e3', '2147483648', '-2147483649', '5px', '', '+5', '1 2', 5]) {
+    assert.equal(isSafeZIndexValue(value), false, String(value));
+    assert.equal(isSafeLayoutValue(value, 'z-index'), false, String(value));
+  }
+});
+
+test('position values are limited to the safe positioning keywords', () => {
+  for (const value of ['static', 'relative', 'absolute', 'fixed', 'sticky', ' RELATIVE ']) {
+    assert.equal(isSafePositionValue(value), true, value);
+    assert.equal(isSafeLayoutValue(value, 'position'), true, value);
+  }
+  for (const value of ['none', 'inherit', 'absolute;', '1', 'url(x)', '', 'relative !important']) {
+    assert.equal(isSafePositionValue(value), false, String(value));
+    assert.equal(isSafeLayoutValue(value, 'position'), false, String(value));
+  }
+});
+
+test('sanitizeDeclarations keeps layer pairs and drops invalid z-index or position', () => {
+  const clean = sanitizeDeclarations({ 'z-index': '7', position: 'relative', width: '320px' });
+  assert.deepEqual(clean, { 'z-index': '7', position: 'relative', width: '320px' });
+  assert.deepEqual(sanitizeDeclarations({ 'z-index': '9999999999', position: 'absolute;', width: '300px' }), {
+    width: '300px',
+  });
+  assert.deepEqual(sanitizeDeclarations({ position: 'fixed', 'z-index': 'auto' }), { position: 'fixed' });
+  assert.deepEqual(sanitizeDeclarations({ 'z-index': '5', position: 'relative' }), { 'z-index': '5', position: 'relative' });
+});
+
+test('declarationsToCss forces !important for layer declarations', () => {
+  assert.equal(
+    declarationsToCss({ position: 'relative', 'z-index': '-3' }),
+    'position: relative !important; z-index: -3 !important;',
+  );
+  assert.equal(layoutRuleCss('.panel', { 'z-index': '5' }), '.panel { z-index: 5 !important; }');
 });

@@ -32,11 +32,16 @@ import type { ServiceApi, ServiceEnv } from './service-contract';
 import { AppStore } from './store';
 import {
   closeProcesses,
+  discoverCommonInstallApps,
   discoverInstalledApps,
+  discoverRegistryApps,
+  discoverRunningApps,
+  discoverStartMenuApps,
   exeNameForPath,
   listProcesses,
   listProcessesForExecutable,
 } from './apps/discovery';
+import { mergeDiscoveredApps } from './apps/detection';
 import {
   allocateDebugPort,
   findDebugPortForApp,
@@ -44,6 +49,21 @@ import {
   waitForDebugEndpoint,
 } from './apps/launcher';
 import { createEngine, probeDebugEndpoint } from './engine/engine';
+import { createCombinedEngine } from './engine/combined-engine';
+
+function isNormalCdpPageUrl(url: string): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  if (lower === 'about:blank') return false;
+  return !(
+    lower.includes('overwolf.com/monsdk') ||
+    lower.includes('/adview') ||
+    lower.includes('ow-cmp') ||
+    lower.includes('offline.html') ||
+    lower.includes('offline_overlay') ||
+    lower.startsWith('owepm://')
+  );
+}
 
 interface Runtime {
   app: PersistedApp;
@@ -60,6 +80,7 @@ interface Runtime {
   canAttach: boolean;
   iconDataUrl?: string;
   managedPid?: number;
+  effectiveExePath?: string;
   pendingPicked: number;
   layoutEditing: boolean;
 }
@@ -114,7 +135,21 @@ const LAYOUT_PROPERTIES = new Set<string>([
   'box-sizing',
   'max-inline-size',
   'min-inline-size',
+  'position',
+  'z-index',
 ]);
+
+function isValidLayoutValue(property: string, value: string): boolean {
+  if (property === 'z-index') {
+    if (!/^-?\d{1,10}$/.test(value)) return false;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= -2147483648 && numeric <= 2147483647;
+  }
+  if (property === 'position') {
+    return ['static', 'relative', 'absolute', 'fixed', 'sticky'].includes(value);
+  }
+  return true;
+}
 
 function sanitizeLayoutDeclarations(
   raw: Record<string, string> | undefined,
@@ -129,6 +164,7 @@ function sanitizeLayoutDeclarations(
     if (!text || text.length > MAX_LAYOUT_VALUE) continue;
     if (/[;{}<>\\]/.test(text)) continue;
     if (/url\s*\(|expression\s*\(|@import/i.test(text)) continue;
+    if (!isValidLayoutValue(property, text)) continue;
     output[property] = text;
     if (Object.keys(output).length >= MAX_LAYOUT_DECLARATIONS) break;
   }
@@ -156,6 +192,9 @@ export class AppService implements ServiceApi {
   private sink: (event: AppEvent) => void = () => {};
   private injectedScriptCache: string | null = null;
   private detectedCache: { at: number; apps: DiscoveredApp[] } | null = null;
+  private runningAppsCache: { at: number; apps: DiscoveredApp[] } | null = null;
+  private detectedPromise: Promise<DiscoveredApp[]> | null = null;
+  private runningPromise: Promise<DiscoveredApp[]> | null = null;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private refreshPromise: Promise<AppView[]> | null = null;
   private disposed = false;
@@ -167,6 +206,9 @@ export class AppService implements ServiceApi {
   async init(): Promise<void> {
     await this.store.load();
     for (const app of this.store.data.apps) this.runtimes.set(app.id, this.makeRuntime(app));
+    setTimeout(() => {
+      void this.detectedApps().catch(() => undefined);
+    }, 2000);
     this.refreshTimer = setInterval(() => {
       void this.refresh()
         .then((apps) => this.emit({ type: 'apps', apps }))
@@ -186,7 +228,7 @@ export class AppService implements ServiceApi {
       await this.detachEngine(runtime);
       if (closeManaged && runtime.launchedByUs) {
         try {
-          const processes = await this.processesFor(runtime.app.exePath);
+          const processes = await this.processesForRuntime(runtime);
           if (processes.length > 0) {
             await closeProcesses(
               processes.map((process) => process.pid),
@@ -314,12 +356,51 @@ export class AppService implements ServiceApi {
     }
   }
 
+  private async processesForRuntime(runtime: Runtime): Promise<ProcessInfo[]> {
+    const primary = runtime.effectiveExePath ?? runtime.app.exePath;
+    let processes = await this.processesFor(primary);
+    if (processes.length === 0 && !samePath(primary, runtime.app.exePath)) {
+      processes = await this.processesFor(runtime.app.exePath);
+    }
+    return processes;
+  }
+
+  private async waitForNoRuntimeProcesses(runtime: Runtime, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if ((await this.processesForRuntime(runtime)).length === 0) return true;
+      await sleep(250);
+    }
+    return false;
+  }
+
   private async waitForNoProcesses(exePath: string, timeoutMs: number): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const processes = await this.processesFor(exePath);
       if (processes.length === 0) return true;
       await sleep(250);
+    }
+    return false;
+  }
+
+  private async waitForInspectorPort(port: number, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1200);
+      try {
+        const response = await fetch('http://127.0.0.1:' + port + '/json/list', { signal: controller.signal });
+        if (response.ok) {
+          const list = await response.json();
+          if (Array.isArray(list) && list.length > 0) return true;
+        }
+      } catch {
+        // Inspector not up yet.
+      } finally {
+        clearTimeout(timer);
+      }
+      await sleep(300);
     }
     return false;
   }
@@ -371,15 +452,33 @@ export class AppService implements ServiceApi {
     } catch {
       processes = [];
     }
+    const runningApps = await this.runningApps();
 
     const views: AppView[] = [];
     for (const runtime of this.runtimes.values()) {
       const exeName = exeNameForPath(runtime.app.exePath).toLowerCase();
-      const matches = processes.filter((process) => {
+      let matches = processes.filter((process) => {
         if (process.name.toLowerCase() === exeName) return true;
         if (process.exePath && samePath(process.exePath, runtime.app.exePath)) return true;
         return false;
       });
+      let effectiveExePath = runtime.app.exePath;
+      if (matches.length === 0) {
+        const running =
+          runningApps.find((app) => samePath(app.exePath, runtime.app.exePath)) ??
+          runningApps.find((app) => app.name.toLowerCase() === runtime.app.name.toLowerCase());
+        if (running) {
+          effectiveExePath = running.exePath;
+          matches = [
+            {
+              pid: 0,
+              name: path.basename(running.exePath),
+              exePath: running.exePath,
+            },
+          ];
+        }
+      }
+      runtime.effectiveExePath = effectiveExePath;
       runtime.runningProcessCount = matches.length;
       await this.ensureIcon(runtime);
 
@@ -412,22 +511,77 @@ export class AppService implements ServiceApi {
     return false;
   }
 
+  private async runningApps(): Promise<DiscoveredApp[]> {
+    const now = Date.now();
+    if (this.runningAppsCache && now - this.runningAppsCache.at < 10_000) {
+      return this.runningAppsCache.apps;
+    }
+    if (this.runningPromise) return this.runningPromise;
+    this.runningPromise = (async () => {
+      let apps: DiscoveredApp[] = [];
+      try {
+        apps = await discoverRunningApps();
+      } catch {
+        return this.runningAppsCache?.apps ?? [];
+      }
+      const filtered = apps.filter((app) => !this.isSelfExe(app.exePath));
+      this.runningAppsCache = { at: now, apps: filtered };
+      return filtered;
+    })().finally(() => {
+      this.runningPromise = null;
+    });
+    return this.runningPromise;
+  }
+
   private async detectedApps(): Promise<DiscoveredApp[]> {
     const now = Date.now();
     if (this.detectedCache && now - this.detectedCache.at < 60_000) return this.detectedCache.apps;
-    let apps: DiscoveredApp[] = [];
-    try {
-      apps = await discoverInstalledApps();
-    } catch {
-      apps = [];
-    }
-    const filtered = apps.filter((app) => !this.isSelfExe(app.exePath));
-    this.detectedCache = { at: now, apps: filtered };
-    return filtered;
+    if (this.detectedPromise) return this.detectedPromise;
+    this.detectedPromise = (async () => {
+      let apps: DiscoveredApp[] = [];
+      try {
+        apps = await discoverInstalledApps();
+      } catch {
+        const started = Date.now();
+        const settled = await Promise.allSettled([
+          discoverStartMenuApps(),
+          discoverRegistryApps(),
+          discoverCommonInstallApps(),
+        ]);
+        const successful: DiscoveredApp[][] = [];
+        const diagnostic: Array<Record<string, unknown>> = [];
+        for (const [index, entry] of settled.entries()) {
+          if (entry.status === 'fulfilled') {
+            successful.push(entry.value);
+            diagnostic.push({ source: ['start-menu', 'registry', 'filesystem'][index], count: entry.value.length });
+          } else {
+            diagnostic.push({
+              source: ['start-menu', 'registry', 'filesystem'][index],
+              error: entry.reason instanceof Error ? entry.reason.message : String(entry.reason),
+            });
+          }
+        }
+        try {
+          fs.writeFileSync(
+            path.join(this.env.dataDir, 'detection-diagnostic.json'),
+            JSON.stringify({ at: new Date().toISOString(), ms: Date.now() - started, diagnostic }, null, 2),
+          );
+        } catch {
+          // Diagnostics must never break detection.
+        }
+        apps = successful.length > 0 ? mergeDiscoveredApps(successful) : [];
+      }
+      const filtered = apps.filter((app) => !this.isSelfExe(app.exePath));
+      this.detectedCache = { at: now, apps: filtered };
+      return filtered;
+    })().finally(() => {
+      this.detectedPromise = null;
+    });
+    return this.detectedPromise;
   }
 
   private async findDiscovered(exePath: string): Promise<DiscoveredApp | undefined> {
-    const apps = await this.detectedApps();
+    const apps = [...(await this.detectedApps()), ...(await this.runningApps())];
     return apps.find((app) => samePath(app.exePath, exePath));
   }
 
@@ -436,7 +590,9 @@ export class AppService implements ServiceApi {
   }
 
   async listDetectedApps(): Promise<DiscoveredApp[]> {
-    const apps = await this.detectedApps();
+    const installed = await this.detectedApps();
+    const running = await this.runningApps();
+    const apps = [...installed, ...running];
     const existing = new Set(
       this.store.data.apps.map((app) => path.resolve(app.exePath).toLowerCase()),
     );
@@ -547,13 +703,69 @@ export class AppService implements ServiceApi {
     return { enabled, cosmetic, networkPatterns: patterns, layout };
   }
 
+  private async probeInspectorEndpoint(port: number, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1200);
+      try {
+        const response = await fetch('http://127.0.0.1:' + port + '/json/list', {
+          signal: controller.signal,
+        });
+        if (response.ok) {
+          const list = await response.json();
+          if (Array.isArray(list) && list.length > 0) return true;
+        }
+      } catch {
+        // Inspector not reachable yet.
+      } finally {
+        clearTimeout(timer);
+      }
+      await sleep(200);
+    }
+    return false;
+  }
+
+  private async cdpCoversVisibleWindow(debugPort: number): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1800);
+    try {
+      const response = await fetch('http://127.0.0.1:' + debugPort + '/json/list', {
+        signal: controller.signal,
+      });
+      if (!response.ok) return false;
+      const list = await response.json();
+      if (!Array.isArray(list)) return false;
+      return list.some(
+        (target) =>
+          target &&
+          target.type === 'page' &&
+          isNormalCdpPageUrl(String(target.url ?? '')),
+      );
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async connectEngine(runtime: Runtime, port: number): Promise<void> {
-    const engine = createEngine({
+    let inspectorPort: number | undefined;
+    if (runtime.app.inspectPort !== undefined) {
+      const covered = await this.cdpCoversVisibleWindow(port);
+      if (!covered && (await this.probeInspectorEndpoint(runtime.app.inspectPort, 1500))) {
+        inspectorPort = runtime.app.inspectPort;
+      }
+    }
+    const engineOptions = {
       appId: runtime.app.id,
       injectedScript: this.injectedScript(),
       getConfig: () => this.configFor(runtime.app.id),
-      onEvent: (event) => this.handleEngineEvent(runtime, event),
-    });
+      onEvent: (event: EngineEvent) => this.handleEngineEvent(runtime, event),
+    };
+    const engine = inspectorPort !== undefined
+      ? createCombinedEngine({ ...engineOptions, inspectorPort })
+      : createEngine(engineOptions);
     try {
       const info = await engine.connect(port);
       runtime.engine = engine;
@@ -581,7 +793,7 @@ export class AppService implements ServiceApi {
     const candidates: number[] = [];
     if (runtime.app.debugPort) candidates.push(runtime.app.debugPort);
     try {
-      const found = await findDebugPortForApp(runtime.app.exePath);
+      const found = await findDebugPortForApp(runtime.effectiveExePath ?? runtime.app.exePath);
       if (found) candidates.push(found);
     } catch {
       // No listening endpoint found.
@@ -606,7 +818,7 @@ export class AppService implements ServiceApi {
     const runtime = this.getRuntime(appId);
     if (runtime.engine?.connected) return this.toView(runtime);
 
-    const existing = await this.processesFor(runtime.app.exePath);
+    const existing = await this.processesForRuntime(runtime);
     if (existing.length > 0) {
       const attached = await this.tryAttach(runtime);
       if (attached) {
@@ -634,12 +846,22 @@ export class AppService implements ServiceApi {
       throw new Error(runtime.lastError);
     }
     runtime.app.debugPort = port;
+    let inspectPort: number | undefined;
+    try {
+      inspectPort = await allocateDebugPort(port + 1);
+    } catch {
+      inspectPort = undefined;
+    }
+    if (inspectPort !== undefined) runtime.app.inspectPort = inspectPort;
     await this.persist();
+
+    const launchArgs = [...runtime.app.shortcutArgs];
+    if (inspectPort !== undefined) launchArgs.push('--inspect=' + String(inspectPort));
 
     try {
       runtime.managedPid = await launchExecutable(
         runtime.app.exePath,
-        runtime.app.shortcutArgs,
+        launchArgs,
         port,
       );
     } catch (error) {
@@ -654,6 +876,7 @@ export class AppService implements ServiceApi {
     await this.persist();
 
     const ready = await waitForDebugEndpoint(port, LAUNCH_TIMEOUT_MS);
+    if (inspectPort !== undefined) await this.waitForInspectorPort(inspectPort, 12_000);
     if (!ready) {
       runtime.status = 'error';
       runtime.lastError =
@@ -702,7 +925,7 @@ export class AppService implements ServiceApi {
   async relaunchApp(appId: string): Promise<AppView> {
     const runtime = this.getRuntime(appId);
     await this.detachEngine(runtime);
-    const processes = await this.processesFor(runtime.app.exePath);
+    const processes = await this.processesForRuntime(runtime);
     if (processes.length > 0) {
       try {
         await closeProcesses(
@@ -712,7 +935,7 @@ export class AppService implements ServiceApi {
       } catch {
         // Fall through to the launch attempt.
       }
-      await this.waitForNoProcesses(runtime.app.exePath, 7000);
+      await this.waitForNoRuntimeProcesses(runtime, 7000);
     }
     runtime.launchedByUs = false;
     runtime.managedPid = undefined;
@@ -722,7 +945,7 @@ export class AppService implements ServiceApi {
   async closeApp(appId: string): Promise<AppView> {
     const runtime = this.getRuntime(appId);
     await this.detachEngine(runtime);
-    const processes = await this.processesFor(runtime.app.exePath);
+    const processes = await this.processesForRuntime(runtime);
     if (processes.length > 0) {
       try {
         await closeProcesses(
@@ -732,7 +955,7 @@ export class AppService implements ServiceApi {
       } catch {
         // Ignore close errors.
       }
-      await this.waitForNoProcesses(runtime.app.exePath, 6000);
+      await this.waitForNoRuntimeProcesses(runtime, 6000);
     }
     runtime.status = 'not-running';
     runtime.runningProcessCount = 0;
@@ -749,7 +972,7 @@ export class AppService implements ServiceApi {
   async detachApp(appId: string): Promise<AppView> {
     const runtime = this.getRuntime(appId);
     await this.detachEngine(runtime);
-    const processes = await this.processesFor(runtime.app.exePath);
+    const processes = await this.processesForRuntime(runtime);
     runtime.runningProcessCount = processes.length;
     runtime.status = processes.length > 0 ? 'running' : 'not-running';
     runtime.pages = 0;
@@ -968,6 +1191,43 @@ export class AppService implements ServiceApi {
       throw new Error('Attach ' + runtime.app.name + ' before scanning for ads');
     }
     return runtime.engine.scanForAds();
+  }
+
+  async resetAppearance(appId: string): Promise<AppView> {
+    const runtime = this.getRuntime(appId);
+    const engine = runtime.engine;
+    if (runtime.layoutEditing && engine?.connected) {
+      try {
+        await engine.stopLayoutEditor();
+      } catch {
+        // Ignore stop failures before reset.
+      }
+    }
+    if (runtime.pickerActive && engine?.connected) {
+      try {
+        await engine.stopPicker();
+      } catch {
+        // Ignore stop failures before reset.
+      }
+    }
+    runtime.layoutEditing = false;
+    runtime.pickerActive = false;
+    const removed = runtime.app.cosmeticRules.length + runtime.app.layoutRules.length;
+    runtime.app.cosmeticRules = [];
+    runtime.app.layoutRules = [];
+    await this.persist();
+    await this.updateEngineFilters(runtime);
+    this.emitApp(runtime);
+    this.emit({
+      type: 'toast',
+      level: 'success',
+      message:
+        removed === 0
+          ? 'Nothing to reset in ' + runtime.app.name
+          : 'Restored original appearance in ' + runtime.app.name + ' (' + removed + ' rule' + (removed === 1 ? '' : 's') + ' removed)',
+      appId,
+    });
+    return this.toView(runtime);
   }
 
   async startLayoutEditor(appId: string): Promise<AppView> {

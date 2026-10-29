@@ -92,6 +92,7 @@ export interface Controller {
   addLayoutRule(appId: string, input: LayoutRuleInput): Promise<boolean>;
   updateLayoutRule(appId: string, ruleId: string, patch: LayoutRulePatch): Promise<void>;
   removeLayoutRule(appId: string, ruleId: string): Promise<void>;
+  requestResetAppearance(appId: string): void;
   updateSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<boolean>;
   savePickerHotkey(value: string): Promise<boolean>;
   clearActivity(appId: string): Promise<void>;
