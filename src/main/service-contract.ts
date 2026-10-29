@@ -7,7 +7,7 @@ export interface ServiceEnv {
   packaged: boolean;
 }
 
-export type ServiceMethods = Omit<AdblockApi, 'onEvent'>;
+export type ServiceMethods = Omit<AdblockApi, 'onEvent' | 'browseForExecutable'>;
 
 export interface ServiceApi extends ServiceMethods {
   init(): Promise<void>;

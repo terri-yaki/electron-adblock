@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   globalShortcut,
   Menu,
   nativeImage,
@@ -16,11 +17,22 @@ import type { ServiceApi, ServiceEnv } from './service-contract';
 
 const shotPath = process.env.EAB_SHOT ?? '';
 const shotDelay = Number(process.env.EAB_SHOT_DELAY_MS ?? '1600');
+const shotSearch = process.env.EAB_SHOT_SEARCH ?? '';
 const windowWidth = Number(process.env.EAB_WINDOW_WIDTH ?? '1240');
 const windowHeight = Number(process.env.EAB_WINDOW_HEIGHT ?? '820');
 const mockMode = process.env.EAB_MOCK === '1';
 const wantDevTools = process.argv.includes('--dev');
 const shotMode = shotPath.length > 0;
+const debugPort = Number(process.env.EAB_DEBUG_PORT ?? '0');
+const profileDir = process.env.EAB_PROFILE_DIR;
+
+if (profileDir) {
+  app.setPath('userData', path.resolve(profileDir));
+}
+
+if (debugPort > 0) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -34,7 +46,7 @@ function assetPath(name: string): string {
 }
 
 function dataDir(): string {
-  return process.env.EAB_DATA_DIR ?? path.join(app.getPath('userData'), 'electron-adblock');
+  return process.env.EAB_DATA_DIR ?? app.getPath('userData');
 }
 
 function showWindow(): void {
@@ -117,7 +129,8 @@ function createWindow(): void {
     }
   });
 
-  void win.loadFile(path.join(__dirname, 'index.html'));
+  const loadOptions = shotSearch ? { search: shotSearch } : undefined;
+  void win.loadFile(path.join(__dirname, 'index.html'), loadOptions);
 }
 
 function updateTrayMenu(): void {
@@ -251,6 +264,15 @@ async function start(): Promise<void> {
       }
     },
     onEvent: handleEvent,
+    browseExecutable: async () => {
+      const result = await dialog.showOpenDialog({
+        title: 'Choose an Electron application',
+        properties: ['openFile'],
+        filters: [{ name: 'Applications', extensions: ['exe'] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) return null;
+      return result.filePaths[0] ?? null;
+    },
   });
 
   createWindow();

@@ -18,6 +18,7 @@ const mock = arg('mock', false) === true;
 const delay = String(arg('delay', '1800'));
 const width = String(arg('width', '1240'));
 const height = String(arg('height', '820'));
+const search = String(arg('search', ''));
 
 await mkdir(path.dirname(out), { recursive: true });
 await rm(out, { force: true });
@@ -30,6 +31,10 @@ const env = {
   EAB_WINDOW_HEIGHT: height,
 };
 if (mock) env.EAB_MOCK = '1';
+if (search) env.EAB_SHOT_SEARCH = search;
+// DSH/Electron host sets this; it would run our app as plain Node.
+delete env.ELECTRON_RUN_AS_NODE;
+delete env.ELECTRON_NO_ATTACH_CONSOLE;
 
 const child = spawn(electronPath, ['.'], {
   cwd: root,

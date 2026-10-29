@@ -12,14 +12,16 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "pretest": "npm run build",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests",
-    "test:unit": "node --import tsx --test tests/unit",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test:unit": "node --import tsx --test \"tests/unit/**/*.test.ts\"",
     "assets": "node scripts/gen-assets.mjs",
     "shot": "node scripts/screenshot.mjs",
-    "package": "npm run build && electron-builder --win portable"
+    "package": "npm run build && electron-builder --win portable",
+    "live": "node scripts/live-verify.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

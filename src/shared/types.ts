@@ -16,6 +16,40 @@ export interface CosmeticRule {
   createdAt: number;
 }
 
+export type LayoutRuleSource = 'layout' | 'manual' | 'preset';
+
+export interface LayoutRule {
+  id: string;
+  selector: string;
+  declarations: Record<string, string>;
+  label?: string;
+  enabled: boolean;
+  source: LayoutRuleSource;
+  createdAt: number;
+}
+
+export interface LayoutRuleInput {
+  selector: string;
+  declarations: Record<string, string>;
+  label?: string;
+  source?: LayoutRuleSource;
+}
+
+export interface LayoutRulePatch {
+  selector?: string;
+  declarations?: Record<string, string>;
+  label?: string;
+  enabled?: boolean;
+}
+
+export interface LayoutReport {
+  selector: string;
+  declarations: Record<string, string>;
+  label: string;
+  frameUrl: string;
+  matches: number;
+}
+
 export interface NetworkRule {
   id: string;
   pattern: string;
@@ -67,6 +101,8 @@ export interface AppView {
   stats: AppStats;
   cosmeticRules: CosmeticRule[];
   networkRules: NetworkRule[];
+  layoutRules: LayoutRule[];
+  layoutEditing: boolean;
   iconDataUrl?: string;
 }
 
@@ -121,6 +157,7 @@ export type AppEvent =
   | { type: 'settings'; settings: Settings }
   | { type: 'picker'; appId: string; active: boolean; picked: number }
   | { type: 'picked'; appId: string; rule: CosmeticRule; matchCount: number }
+  | { type: 'layout'; appId: string; active: boolean; rule?: LayoutRule; matches?: number }
   | { type: 'toast'; level: 'info' | 'success' | 'error'; message: string; appId?: string }
   | { type: 'log'; appId: string; entry: BlockedEvent }
   | { type: 'error'; appId?: string; message: string };
@@ -128,6 +165,8 @@ export type AppEvent =
 export interface AdblockApi {
   getBootstrap(): Promise<BootstrapState>;
   refresh(): Promise<AppView[]>;
+  browseForExecutable(): Promise<string | null>;
+  listDetectedApps(): Promise<DiscoveredApp[]>;
   addApp(exePath: string): Promise<AppView>;
   removeApp(appId: string): Promise<AppView[]>;
   launchApp(appId: string): Promise<AppView>;
@@ -146,6 +185,11 @@ export interface AdblockApi {
   startPicker(appId: string): Promise<AppView>;
   stopPicker(appId: string): Promise<AppView>;
   scanForAds(appId: string): Promise<AdCandidate[]>;
+  startLayoutEditor(appId: string): Promise<AppView>;
+  stopLayoutEditor(appId: string): Promise<AppView>;
+  addLayoutRule(appId: string, input: LayoutRuleInput): Promise<AppView>;
+  updateLayoutRule(appId: string, ruleId: string, patch: LayoutRulePatch): Promise<AppView>;
+  removeLayoutRule(appId: string, ruleId: string): Promise<AppView>;
   getBlockedLog(appId: string): Promise<BlockedEvent[]>;
   clearBlockedLog(appId: string): Promise<void>;
   onEvent(listener: (event: AppEvent) => void): () => void;
@@ -176,6 +220,7 @@ export interface PersistedApp {
   lastOpenedAt?: number;
   cosmeticRules: CosmeticRule[];
   networkRules: NetworkRule[];
+  layoutRules: LayoutRule[];
 }
 
 export interface PersistedState {
@@ -199,6 +244,7 @@ export interface EngineFilterConfig {
   enabled: boolean;
   cosmetic: CosmeticRule[];
   networkPatterns: string[];
+  layout: LayoutRule[];
 }
 
 export interface PickReport {
@@ -219,6 +265,8 @@ export type EngineEvent =
   | { type: 'page'; url: string; pages: number }
   | { type: 'picker'; active: boolean; picked: number }
   | { type: 'picked'; report: PickReport }
+  | { type: 'layout'; report: LayoutReport }
+  | { type: 'layout-editor'; active: boolean }
   | { type: 'error'; message: string };
 
 export interface EngineOptions {
@@ -236,6 +284,8 @@ export interface Engine {
   startPicker(): Promise<void>;
   stopPicker(): Promise<void>;
   scanForAds(): Promise<AdCandidate[]>;
+  startLayoutEditor(): Promise<void>;
+  stopLayoutEditor(): Promise<void>;
   stats(): AppStats;
 }
 

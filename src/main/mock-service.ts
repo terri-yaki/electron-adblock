@@ -4,10 +4,14 @@ import type {
   AppEvent,
   AppView,
   BlockedEvent,
+  DiscoveredApp,
   BootstrapState,
   CosmeticRule,
   CosmeticRuleInput,
   CosmeticRulePatch,
+  LayoutRule,
+  LayoutRuleInput,
+  LayoutRulePatch,
   NetworkRule,
   NetworkRulePatch,
   Settings,
@@ -27,6 +31,8 @@ function view(partial: Partial<AppView> & Pick<AppView, 'id' | 'name' | 'exePath
     stats: { blockedRequests: 0, hiddenElements: 0, pages: 0 },
     cosmeticRules: [],
     networkRules: [],
+    layoutRules: [],
+    layoutEditing: false,
     ...partial,
   };
 }
@@ -80,6 +86,17 @@ export class MockService implements ServiceApi {
           cosmeticRule('r-opgg-2', 'div[class*="sponsor"]', 'Sponsored card'),
         ],
         networkRules: [networkRule('n-opgg-1', 'adfit.kakao.com')],
+        layoutRules: [
+          {
+            id: 'lr-opgg-1',
+            selector: '.side-ads-wrapper',
+            declarations: { width: '0px', 'min-width': '0px' },
+            label: 'Collapse the removed ad rail',
+            enabled: true,
+            source: 'layout',
+            createdAt: now,
+          },
+        ],
       }),
       view({
         id: 'discord',
@@ -177,6 +194,27 @@ export class MockService implements ServiceApi {
 
   async refresh(): Promise<AppView[]> {
     return this.apps;
+  }
+
+  async browseForExecutable(): Promise<string | null> {
+    return 'C:\\Users\\hoyul\\AppData\\Local\\Programs\\Blitz\\Blitz.exe';
+  }
+
+  async listDetectedApps(): Promise<DiscoveredApp[]> {
+    return [
+      {
+        exePath: 'C:\\Users\\hoyul\\AppData\\Local\\Programs\\Electron\\electron.exe',
+        name: 'Electron',
+        source: 'start-menu',
+        shortcutArgs: [],
+      },
+      {
+        exePath: 'C:\\Program Files\\Grok Bot\\Grok Bot.exe',
+        name: 'Grok Bot',
+        source: 'start-menu',
+        shortcutArgs: [],
+      },
+    ];
   }
 
   async addApp(exePath: string): Promise<AppView> {
@@ -413,6 +451,81 @@ export class MockService implements ServiceApi {
         height: 250,
       },
     ];
+  }
+
+  async startLayoutEditor(appId: string): Promise<AppView> {
+    const app = this.find(appId);
+    app.layoutEditing = true;
+    this.emit({ type: 'app', app });
+    this.emit({ type: 'layout', appId, active: true });
+    this.emit({
+      type: 'toast',
+      level: 'info',
+      message: 'Layout mode: click a panel in ' + app.name + ', drag its handles, then Save.',
+      appId,
+    });
+    setTimeout(() => {
+      if (!app.layoutEditing) return;
+      const rule: LayoutRule = {
+        id: 'lr-' + Date.now(),
+        selector: '.lol-main',
+        declarations: { width: '100%', 'max-width': 'none' },
+        label: 'Expand main panel',
+        enabled: true,
+        source: 'layout',
+        createdAt: Date.now(),
+      };
+      app.layoutRules.push(rule);
+      app.layoutEditing = false;
+      this.emit({ type: 'layout', appId, active: false, rule, matches: 1 });
+      this.emit({ type: 'app', app });
+      this.emit({ type: 'toast', level: 'success', message: 'Main panel expanded', appId });
+    }, 2600);
+    return app;
+  }
+
+  async stopLayoutEditor(appId: string): Promise<AppView> {
+    const app = this.find(appId);
+    app.layoutEditing = false;
+    this.emit({ type: 'app', app });
+    this.emit({ type: 'layout', appId, active: false });
+    return app;
+  }
+
+  async addLayoutRule(appId: string, input: LayoutRuleInput): Promise<AppView> {
+    const app = this.find(appId);
+    app.layoutRules.push({
+      id: 'lr-' + Date.now(),
+      selector: input.selector,
+      declarations: input.declarations,
+      label: input.label,
+      enabled: true,
+      source: input.source ?? 'manual',
+      createdAt: Date.now(),
+    });
+    this.emit({ type: 'app', app });
+    this.emit({ type: 'toast', level: 'success', message: 'Layout rule saved', appId });
+    return app;
+  }
+
+  async updateLayoutRule(
+    appId: string,
+    ruleId: string,
+    patch: LayoutRulePatch,
+  ): Promise<AppView> {
+    const app = this.find(appId);
+    const rule = app.layoutRules.find((item) => item.id === ruleId);
+    if (!rule) throw new Error('Unknown layout rule: ' + ruleId);
+    Object.assign(rule, patch);
+    this.emit({ type: 'app', app });
+    return app;
+  }
+
+  async removeLayoutRule(appId: string, ruleId: string): Promise<AppView> {
+    const app = this.find(appId);
+    app.layoutRules = app.layoutRules.filter((rule) => rule.id !== ruleId);
+    this.emit({ type: 'app', app });
+    return app;
   }
 
   async getBlockedLog(appId: string): Promise<BlockedEvent[]> {
